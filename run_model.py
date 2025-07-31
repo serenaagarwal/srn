@@ -8,8 +8,8 @@ from preprocess import ImagePairDataset
 from rrdb_arch import SRN
 
 def main():
-    train_dataset = ImagePairDataset("/Users/serenaagarwal/Desktop/Lab & Segmentations/srn/dataset/train")
-    test_dataset = ImagePairDataset("/Users/serenaagarwal/Desktop/Lab & Segmentations/srn/dataset/val")
+    train_dataset = ImagePairDataset("dataset/train")
+    test_dataset = ImagePairDataset("dataset/val")
 
     print("dataset created!")
 
