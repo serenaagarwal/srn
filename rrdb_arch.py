@@ -44,7 +44,7 @@ class SRN(nn.Module):
         super(SRN, self).__init__()
         nf = 64
         self.first_conv = nn.Conv2d(in_channels=num_channels, out_channels=nf, kernel_size=3, stride=1, padding=1)
-        self.RRDB_blocks = [RRDB(64) for _ in range(23)]
+        self.RRDB_blocks = nn.ModuleList([RRDB(64) for _ in range(23)])
         # self.block1 = RRBD(nf)
         # self.block2 = RRBD(nf)
         # self.block3 = RRBD(nf)

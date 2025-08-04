@@ -1,25 +1,30 @@
-import torch
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+import torch
 from PIL import Image
 import numpy as np
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from preprocess import ImagePairDataset
 from rrdb_arch import SRN
+from pytorch_msssim import MS_SSIM
+
 
 def main():
     train_dataset = ImagePairDataset("dataset/train")
     test_dataset = ImagePairDataset("dataset/val")
 
+    train_subset = Subset(train_dataset, list(range(50)))
+
     print("dataset created!")
 
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=6, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    train_loader = DataLoader(train_subset, batch_size=8, shuffle=True, num_workers=0, pin_memory=False)
+    test_loader = DataLoader(test_dataset, batch_size=8, shuffle=False)
 
     print("data loaded!")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = SRN(1, 64, 512).to(device)
+    model = SRN(1, 64, 256).to(device)
 
     print("model and device initialized!")
     print(f"device is: {device}!")
@@ -55,6 +60,8 @@ def main():
 
         avg_loss = total_loss / len(train_dataset)
         print(f"Average loss for epoch {i + 1} was {avg_loss}.")
+
+    
 
 if __name__ == "__main__":
     main()

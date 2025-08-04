@@ -1,7 +1,7 @@
 import os 
 import numpy as np
 from PIL import Image
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 import torchvision.transforms as transforms
 import cv2
 
@@ -35,7 +35,7 @@ class ImagePairDataset(Dataset):
         mask = Image.open(mask_path).convert("L")
 
         transform_img = transforms.Compose([
-            transforms.Resize((256, 256)),
+            transforms.Resize((128, 128)),
             transforms.ToTensor()
         ])
         transform_mask = transforms.ToTensor()
