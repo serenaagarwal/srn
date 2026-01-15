@@ -1,3 +1,7 @@
 __pycache__/
 dataset/
 logs/
+wandb/
+venv/
+visual_outputs/
+saved_models/
