@@ -1,0 +1,11 @@
+/oscar/home/sagarw56/srn/venv/lib64/python3.9/site-packages/networkx/utils/backends.py:135: RuntimeWarning: networkx backend defined more than once: nx-loopback
+  backends.update(_get_backends("networkx.backends"))
+wandb: Currently logged in as: serena-agarwal (serena-agarwal-brown-university) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: creating run
+wandb: Tracking run with wandb version 0.22.0
+wandb: Run data is saved locally in /oscar/home/sagarw56/srn/wandb/run-20260105_110453-5sfqjvlq
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run wise-lion-28
+wandb: ⭐️ View project at https://wandb.ai/serena-agarwal-brown-university/srn-model
+wandb: 🚀 View run at https://wandb.ai/serena-agarwal-brown-university/srn-model/runs/5sfqjvlq
+slurmstepd: error: *** JOB 15185392 ON gpu2001 CANCELLED AT 2026-01-05T19:04:48 DUE TO TIME LIMIT ***

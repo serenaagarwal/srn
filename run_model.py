@@ -92,6 +92,7 @@ def main():
     print(f"device is: {device}!", flush=True)
 
     criterion = nn.MSELoss()
+    l1_criterion = nn.L1Loss()
     ms_ssim_fn = MS_SSIM(data_range=1.0, size_average=True, channel=1)
     optimizer = torch.optim.Adam(model.parameters(), lr=.001)
 
@@ -108,22 +109,28 @@ def main():
         model.train()
         total_loss = 0.0
         total_resnet_loss = 0.0
-        lamda_resnet = 0.01
+        lambda_resnet = 0.0
+        alpha_content = .84 #be able to cite!!! from sfsrm
 
         for images, masks in train_loader:
             images, masks = images.to(device), masks.to(device)
             outputs = model(images)
-            mse_loss = criterion(outputs, masks)
+            #mse_loss = criterion(outputs, masks)
+            ms_ssim_loss = 1 - ms_ssim_fn(outputs, masks)
+            l1_loss = l1_criterion(outputs, masks)
+            
+            content_loss = alpha_content * ms_ssim_loss + (1 - alpha_content) * l1_loss
 
             outputs_for_res = prep_for_resnet(outputs)
             masks_for_res = prep_for_resnet(masks)
             resnet_loss = perceptual_loss(outputs_for_res, masks_for_res)
             
-            total = mse_loss + lamda_resnet * resnet_loss
+            total = content_loss + lambda_resnet * resnet_loss
             
             optimizer.zero_grad()
             total.backward()
 
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
             total_loss += total.item() * images.size(0)
@@ -144,7 +151,7 @@ def main():
             if p.grad is not None:
                 squared_param_norm = p.grad.data.norm(2)
                 total_norm += squared_param_norm.item() ** 2
-            total_norm = total_norm ** (0.5)
+        total_norm = total_norm ** (0.5)
 
         run.log({"loss": avg_loss, "total norm": total_norm, "squared param norm": squared_param_norm, "resnet loss": avg_resnet_loss})
         
@@ -158,6 +165,7 @@ def main():
         val_len = len(test_dataset) / epochs
         images_saved = 0
 
+        #validation loop here!! 
         with torch.no_grad():
             for batch_idx, (val_images, val_masks) in enumerate(test_loader):
                 val_images, val_masks = val_images.to(device), val_masks.to(device)
@@ -175,7 +183,7 @@ def main():
                             idx=images_saved
                         )
                         images_saved += 1
-                loss = criterion(val_outputs, val_masks)
+                loss = ms_ssim_fn(val_outputs, val_masks)
 
                 score = ms_ssim_fn(val_outputs, val_masks)
             
@@ -187,6 +195,7 @@ def main():
         run.log({"msssim-score": avg_ms_ssim, "val loss": avg_val_loss, "training_loss": avg_loss})
         print(f"Epoch {i + 1}/{epochs} | Validation Loss: {avg_val_loss:.4f} | MS-SSIM score: {avg_ms_ssim:.6f}", flush=True)
         
+        #if the new ssim score is better than the previous best one, set that to the new ssim score and save that model!
         if avg_ms_ssim > best_ms_ssim:
             best_ms_ssim = avg_ms_ssim
             checkpoint_path = f"saved_models/srn_best_epoch{i+1}_msssim{avg_ms_ssim:.6f}.pth"

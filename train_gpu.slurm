@@ -2,7 +2,6 @@
 #SBATCH --job-name=srn_train
 #SBATCH --output=logs/srn_%j.out
 #SBATCH --error=logs/srn_%j.err
-#SBATCH --account=carney-dborton-condo
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
