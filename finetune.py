@@ -1,0 +1,252 @@
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+import torch
+from PIL import Image
+import numpy as np
+import torch.nn as nn
+from torch.utils.data import DataLoader, Subset
+from preprocess import ImagePairDataset
+from rrdb_arch import SRN
+from pytorch_msssim import MS_SSIM
+from resnet import ResNet
+from perceptual_loss import FeatureExtractor, PerceptualLoss, prep_for_resnet
+import matplotlib.pyplot as plt
+import wandb
+
+# -----------------------------------------------------------------
+# FINE-TUNING SETTINGS
+# -----------------------------------------------------------------
+# Path to the checkpoint you already trained on the generic dataset.
+FINETUNE_CHECKPOINT = "saved_models/pretrained.pth"
+
+# Much smaller than the 0.001 used for the original training run --
+# we want to nudge the existing weights toward your lab images, not
+# overwrite what the model already learned from the generic dataset.
+FINETUNE_LEARNING_RATE = 1e-5
+
+FINETUNE_EPOCHS = 10  # how many additional epochs to run
+
+run = wandb.init(entity="serena-agarwal-brown-university", project="srn-model", config={
+    "learning_rate": FINETUNE_LEARNING_RATE,
+    "epochs": FINETUNE_EPOCHS,
+    "finetune_from": FINETUNE_CHECKPOINT,
+})
+
+def save_image_comparison(input_img, output_img, target_img, epoch, idx, save_dir="visual_outputs"):
+    os.makedirs(save_dir, exist_ok=True)
+
+    input_img = input_img.squeeze().detach().cpu().numpy()
+    output_img = output_img.squeeze().detach().cpu().numpy()
+    target_img = target_img.squeeze().detach().cpu().numpy()
+
+    fig, axs = plt.subplots(1, 3, figsize=(12, 4))
+    axs[0].imshow(input_img, cmap='gray')
+    axs[0].set_title("Low-Res Input")
+    axs[0].axis('off')
+
+    axs[1].imshow(output_img, cmap='gray')
+    axs[1].set_title("SRN Output")
+    axs[1].axis('off')
+
+    axs[2].imshow(target_img, cmap='gray')
+    axs[2].set_title("High-Res Ground Truth")
+    axs[2].axis('off')
+
+    plt.tight_layout()
+    plt.savefig(f"{save_dir}/epoch{epoch}_sample{idx}.png")
+
+    run.log({f"epoch{epoch}_sample{idx}": wandb.Image(f"{save_dir}/epoch{epoch}_sample{idx}.png")})
+
+    plt.close()
+
+def save_checkpoint(path, model, optimizer, epoch, best_metric, config):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    torch.save(
+        {
+           "epoch": epoch,
+            "best_metric": best_metric,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "config": dict(config), 
+        },
+        path
+    )
+    print(f"Checkpoint saved at {path} with MS-SSIM: {best_metric:.6f}", flush=True)
+
+
+def main():
+    
+    train_dataset = ImagePairDataset("dataset/train")
+    test_dataset = ImagePairDataset("dataset/val")
+
+    #train_subset = Subset(train_dataset, list(range(50)))
+
+    print("dataset created!", flush=True)
+
+    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=0, pin_memory=False)
+    test_loader = DataLoader(test_dataset, batch_size=8, shuffle=False)
+
+    print("data loaded!", flush=True)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = SRN(1, 64, 256).to(device)
+
+    #load in perceptual loss model
+    num_classes = 23
+    resnet = ResNet(3, num_classes)
+    checkpoint = torch.load("saved_models/new_resnet.pth", map_location=device)
+    resnet.load_state_dict(checkpoint["model_state_dict"])
+    resnet = resnet.to(device)
+    resnet.eval()
+    feature_extractor = FeatureExtractor(resnet).to(device)
+    perceptual_loss = PerceptualLoss(feature_extractor).to(device)
+
+    print("model and device initialized!", flush=True)
+    print(f"device is: {device}!", flush=True)
+
+    # ---------------------------------------------------------
+    # Load the pretrained SRN weights we're fine-tuning from.
+    # This OVERWRITES the freshly-initialized weights above with
+    # the ones from your generic-dataset training run, and also
+    # restores optimizer state + where training left off, so this
+    # continues that run rather than starting from scratch.
+    # ---------------------------------------------------------
+    finetune_checkpoint = torch.load(FINETUNE_CHECKPOINT, map_location=device)
+    model.load_state_dict(finetune_checkpoint["model_state_dict"])
+    print(f"Loaded pretrained weights from {FINETUNE_CHECKPOINT}", flush=True)
+
+    start_epoch = finetune_checkpoint.get("epoch", 0)
+    best_ms_ssim = finetune_checkpoint.get("best_metric", 0.0)
+    print(f"Resuming from epoch {start_epoch}, previous best MS-SSIM: {best_ms_ssim:.6f}", flush=True)
+
+    criterion = nn.MSELoss()
+    l1_criterion = nn.L1Loss()
+    ms_ssim_fn = MS_SSIM(data_range=1.0, size_average=True, channel=1)
+    optimizer = torch.optim.Adam(model.parameters(), lr=FINETUNE_LEARNING_RATE)
+
+    # Restore the optimizer's internal state too (Adam keeps a running
+    # estimate of gradient variance per-parameter). We reload it, then
+    # immediately force the learning rate back down to
+    # FINETUNE_LEARNING_RATE -- otherwise it would keep whatever LR
+    # (0.001) the original run ended on.
+    if "optimizer_state_dict" in finetune_checkpoint:
+        optimizer.load_state_dict(finetune_checkpoint["optimizer_state_dict"])
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = FINETUNE_LEARNING_RATE
+
+    print("initialized loss and optimizer!", flush=True)
+
+    #training loooop
+    num_images_to_save = 5
+
+    epochs = FINETUNE_EPOCHS
+
+    for i in range(start_epoch, start_epoch + epochs):
+        model.train()
+        total_loss = 0.0
+        total_resnet_loss = 0.0
+        lambda_resnet = 0.0
+        alpha_content = .84 #be able to cite!!! from sfsrm
+
+        for images, masks in train_loader:
+            images, masks = images.to(device), masks.to(device)
+            outputs = model(images)
+            #mse_loss = criterion(outputs, masks)
+            ms_ssim_loss = 1 - ms_ssim_fn(outputs, masks)
+            l1_loss = l1_criterion(outputs, masks)
+            
+            content_loss = alpha_content * ms_ssim_loss + (1 - alpha_content) * l1_loss
+
+            outputs_for_res = prep_for_resnet(outputs)
+            masks_for_res = prep_for_resnet(masks)
+            resnet_loss = perceptual_loss(outputs_for_res, masks_for_res)
+            
+            total = content_loss + lambda_resnet * resnet_loss
+            
+            optimizer.zero_grad()
+            total.backward()
+
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+
+            total_loss += total.item() * images.size(0)
+            total_resnet_loss += resnet_loss.item() * images.size(0)
+            print("done!", flush=True)
+
+            # if i == 9:
+            #     image = Image.fromarray(images)
+            #     image.save(format='PNG')
+            
+        avg_loss = total_loss / len(train_dataset)
+        avg_resnet_loss = total_resnet_loss / len(train_dataset)
+
+        total_norm = 0.0
+        squared_param_norm = 0.0
+
+        for p in model.parameters():
+            if p.grad is not None:
+                squared_param_norm = p.grad.data.norm(2)
+                total_norm += squared_param_norm.item() ** 2
+        total_norm = total_norm ** (0.5)
+
+        run.log({"loss": avg_loss, "total norm": total_norm, "squared param norm": squared_param_norm, "resnet loss": avg_resnet_loss})
+        
+        print(f"Average loss for epoch {i + 1} was {avg_loss}.", flush=True)
+
+        #validation!
+
+        model.eval()
+        val_loss = 0.0
+        ms_ssim_score = 0.0
+        val_len = len(test_dataset) / epochs
+        images_saved = 0
+
+        #validation loop here!! 
+        with torch.no_grad():
+            for batch_idx, (val_images, val_masks) in enumerate(test_loader):
+                val_images, val_masks = val_images.to(device), val_masks.to(device)
+
+                val_outputs = model(val_images)
+
+                if images_saved < num_images_to_save:
+                    num_to_save = min(num_images_to_save - images_saved, val_images.shape[0])
+                    for img_idx in range(num_to_save):
+                        save_image_comparison(
+                            input_img=val_images[img_idx],
+                            output_img=val_outputs[img_idx],
+                            target_img=val_masks[img_idx],
+                            epoch=i,
+                            idx=images_saved
+                        )
+                        images_saved += 1
+                loss = ms_ssim_fn(val_outputs, val_masks)
+
+                score = ms_ssim_fn(val_outputs, val_masks)
+            
+                ms_ssim_score += score.item() * val_images.size(0)
+                val_loss += loss.item() * val_images.size(0)
+        avg_ms_ssim = ms_ssim_score / len(test_dataset)
+        avg_val_loss = val_loss / len(test_dataset) 
+
+        run.log({"msssim-score": avg_ms_ssim, "val loss": avg_val_loss, "training_loss": avg_loss})
+        print(f"Epoch {i + 1}/{start_epoch + epochs} | Validation Loss: {avg_val_loss:.4f} | MS-SSIM score: {avg_ms_ssim:.6f}", flush=True)
+        
+        #if the new ssim score is better than the previous best one, set that to the new ssim score and save that model!
+        if avg_ms_ssim > best_ms_ssim:
+            best_ms_ssim = avg_ms_ssim
+            checkpoint_path = f"saved_models/srn_finetuned_best_epoch{i+1}_msssim{avg_ms_ssim:.6f}.pth"
+            save_checkpoint(
+                path=checkpoint_path,
+                model=model,
+                optimizer=optimizer,
+                epoch=i + 1,
+                best_metric=best_ms_ssim,
+                config=run.config
+            )
+            print(f"New best MS-SSIM: {best_ms_ssim:.6f} - Model saved!", flush=True)
+    
+    print(f"\nFine-tuning complete! Best MS-SSIM achieved: {best_ms_ssim:.6f}", flush=True)    
+    run.finish()
+    
+if __name__ == "__main__":
+    main()

@@ -5,3 +5,5 @@ wandb/
 venv/
 visual_outputs/
 saved_models/
+model1info/
+borton_data/
