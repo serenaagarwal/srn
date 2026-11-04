@@ -21,20 +21,16 @@ class ImagePairDataset(Dataset):
                 img002.png
                 ...
 
-    The two folders must contain the same number of files, sorted into
-    matching order (low_res/img001.png pairs with high_res/img001.png).
-
-    Since your images vary in size, every pair gets cropped down to a
-    fixed size before being returned -- lr_crop_size for the low-res
-    image, and lr_crop_size * scale_factor for the high-res image. The
-    crop is "paired": the same region of the scene is cut out of both
-    images, just at their respective resolutions, so they still line up
-    pixel-for-pixel.
+    IMPORTANT: hr_crop_size is not a free choice -- it must match your
+    model's fixed output size (SRN's nn.Upsample(size=output_size)).
+    We fine-tune on 512x512 HR crops, so hr_crop_size=512 here must
+    match `SRN(1, 64, 512)` in run_model.py. The low-res crop size is
+    derived from that: hr_crop_size / scale_factor.
     """
 
-    def __init__(self, root_dir, lr_crop_size=128, scale_factor=4, is_train=True):
-        self.input_dir = os.path.join(root_dir, "low_res")
-        self.target_dir = os.path.join(root_dir, "high_res")
+    def __init__(self, root_dir, hr_crop_size=512, scale_factor=4, is_train=True):
+        self.input_dir = os.path.join(root_dir, "DIV_2K_LR/X4")
+        self.target_dir = os.path.join(root_dir, "DIV_2K_HR")
 
         self.inputs = sorted(os.listdir(self.input_dir))
         self.targets = sorted(os.listdir(self.target_dir))
@@ -43,10 +39,14 @@ class ImagePairDataset(Dataset):
             f"Found {len(self.inputs)} low-res images but "
             f"{len(self.targets)} high-res images -- they should match 1:1."
         )
+        assert hr_crop_size % scale_factor == 0, (
+            f"hr_crop_size ({hr_crop_size}) must divide evenly by "
+            f"scale_factor ({scale_factor})."
+        )
 
-        self.lr_crop_size = lr_crop_size
+        self.hr_crop_size = hr_crop_size
         self.scale_factor = scale_factor
-        self.hr_crop_size = lr_crop_size * scale_factor
+        self.lr_crop_size = hr_crop_size // scale_factor  # e.g. 512 // 4 = 128
 
         # is_train=True  -> crop a random region each time (adds a bit of
         #                    variety, which helps if you don't have many
@@ -69,7 +69,7 @@ class ImagePairDataset(Dataset):
         lr_w, lr_h = low_res_img.size
         crop = self.lr_crop_size
 
-        # If the low-res image is smaller than the crop size we want,
+        # If the low-res image is smaller than the crop size we need,
         # there's nothing to crop -- so first scale BOTH images up
         # (by the same factor) until the low-res side is big enough.
         # This keeps the low-res/high-res relationship intact; it just
@@ -109,8 +109,7 @@ class ImagePairDataset(Dataset):
         input_path = os.path.join(self.input_dir, self.inputs[idx])
         target_path = os.path.join(self.target_dir, self.targets[idx])
 
-        # "L" = single-channel grayscale. Change to "RGB" below (both
-        # places) if your lab images are actually in color.
+        # convert imgs to grayscale
         low_res_img = Image.open(input_path).convert("L")
         high_res_img = Image.open(target_path).convert("L")
 
