@@ -42,8 +42,19 @@ class ResizePairDataset(Dataset):
         return self.lr_transform(img), self.hr_transform(mask)
 
 
+# Fixed crop positions for validation (fractions of the free space in x, y):
+# center, then the four quadrant centers.
+VAL_CROP_POSITIONS = [(0.5, 0.5), (0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)]
+
+
 class ImagePairDataset(Dataset):
-    def __init__(self, lr_dir, hr_dir, hr_crop_size=256, scale_factor=4, is_train=True, downscale_lr=False):
+    """crops_per_image: how many crops each image contributes per epoch.
+    Training: that many independent random crops (more steps per epoch).
+    Validation: up to 5 fixed crops (center + quadrants), so the score is less noisy
+    than a single center crop and is identical every epoch."""
+
+    def __init__(self, lr_dir, hr_dir, hr_crop_size=256, scale_factor=4, is_train=True, downscale_lr=False,
+                 crops_per_image=1):
         self.input_dir = lr_dir
         self.target_dir = hr_dir
 
@@ -67,11 +78,16 @@ class ImagePairDataset(Dataset):
         # resolution (e.g. kaggle): shrink LR to HR / scale_factor before anything else.
         self.downscale_lr = downscale_lr
         self.to_tensor = transforms.ToTensor()
+        if not is_train:
+            assert 1 <= crops_per_image <= len(VAL_CROP_POSITIONS), (
+                f"validation supports 1-{len(VAL_CROP_POSITIONS)} crops per image"
+            )
+        self.crops_per_image = crops_per_image
 
     def __len__(self):
-        return len(self.inputs)
+        return len(self.inputs) * self.crops_per_image
 
-    def _paired_crop(self, low_res_img, high_res_img):
+    def _paired_crop(self, low_res_img, high_res_img, crop_id=0):
         lr_w, lr_h = low_res_img.size
         crop = self.lr_crop_size
 
@@ -92,8 +108,9 @@ class ImagePairDataset(Dataset):
             x = random.randint(0, max_x)
             y = random.randint(0, max_y)
         else:
-            x = max_x // 2
-            y = max_y // 2
+            fx, fy = VAL_CROP_POSITIONS[crop_id]
+            x = int(round(max_x * fx))
+            y = int(round(max_y * fy))
 
         low_res_crop = TF.crop(low_res_img, top=y, left=x, height=crop, width=crop)
 
@@ -106,6 +123,7 @@ class ImagePairDataset(Dataset):
         return low_res_crop, high_res_crop
 
     def __getitem__(self, idx):
+        idx, crop_id = idx % len(self.inputs), idx // len(self.inputs)
         input_path = os.path.join(self.input_dir, self.inputs[idx])
         target_path = os.path.join(self.target_dir, self.targets[idx])
 
@@ -135,7 +153,7 @@ class ImagePairDataset(Dataset):
             )
             high_res_img = high_res_img.crop((0, 0, exp_w, exp_h))
 
-        low_res_img, high_res_img = self._paired_crop(low_res_img, high_res_img)
+        low_res_img, high_res_img = self._paired_crop(low_res_img, high_res_img, crop_id)
         if self.is_train:
             # Synchronized random flipping/rotation
             if random.random() > 0.5:

@@ -4,32 +4,25 @@ import torch.nn.functional as F
 
 
 class FeatureExtractor(nn.Module):
-    def __init__(self, resnet):
+    """Runs the ResNet up to and including `up_to`.
+
+    up_to="avgpool" (old default, kept for edgemap_finetune.py) pools everything
+    into one global vector, which has no spatial information and is a weak
+    perceptual signal. For SR, use an intermediate block such as "block7"
+    (end of layer 2: 512 channels at 1/8 resolution).
+    """
+
+    def __init__(self, resnet, up_to="avgpool"):
         super().__init__()
 
-        self.features = nn.Sequential(
-            resnet.conv1,
-            resnet.bn1,
-            resnet.relu,
-            resnet.max_pool,
-            resnet.block1,
-            resnet.block2,
-            resnet.block3,
-            resnet.block4,
-            resnet.block5,
-            resnet.block6,
-            resnet.block7,
-            resnet.block8,
-            resnet.block9,
-            resnet.block10,
-            resnet.block11,
-            resnet.block12,
-            resnet.block13,
-            resnet.block14, 
-            resnet.block15,
-            resnet.block16,
-            resnet.avgpool
-        )
+        names = ["conv1", "bn1", "relu", "max_pool"] + [f"block{i}" for i in range(1, 17)] + ["avgpool"]
+        assert up_to in names, f"up_to must be one of {names}"
+        layers = []
+        for name in names:
+            layers.append(getattr(resnet, name))
+            if name == up_to:
+                break
+        self.features = nn.Sequential(*layers)
 
         for p in self.features.parameters():
             p.requires_grad = False
@@ -55,7 +48,9 @@ def to_rgb(x):
    return x.repeat(1, 3, 1, 1)
 
 def resize_for_resnet(x):
-    return F.interpolate(x, (256, 256))
+    if x.shape[-2:] == (256, 256):
+        return x
+    return F.interpolate(x, (256, 256), mode="bilinear", align_corners=False)
 
 def normalize_tensor(x):
     mean = torch.tensor([0.485, 0.456, 0.406], device=x.device, dtype=x.dtype).view(1, 3, 1, 1)
